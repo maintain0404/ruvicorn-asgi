@@ -10,19 +10,19 @@ macro_rules! test_trace {
 }
 
 #[derive(Debug)]
-enum KeepAlive {
+pub enum KeepAlive {
     KeepAlive,
     Close,
     None,
 }
 
 #[derive(Debug)]
-enum UpgradeType {
+pub enum UpgradeType {
     WebSocket,
 }
 
 #[derive(Debug)]
-enum Payload {
+pub enum Payload {
     Upgrade(UpgradeType),
     ChunkedPayload,
     Payload,
@@ -30,7 +30,7 @@ enum Payload {
 }
 
 #[derive(Debug)]
-enum Event {
+pub enum Event {
     PartialRequest,
     RequestErr,
     Request(Payload),
@@ -53,7 +53,7 @@ trait PayloadDecoder {
     fn next(&mut self) -> Event;
 }
 
-struct Http11Connection {
+pub struct Http11Connection {
     buffer: BytesMut,
     state: State,
     offset: usize,
@@ -170,11 +170,11 @@ impl Http11Connection {
         Bytes::from_static(b"")
     }
  
-    fn feed(&mut self, data: &[u8]) {
+    pub fn feed(&mut self, data: &[u8]) {
         self.buffer.extend(data);
     }
 
-    fn next(&mut self) -> Event {
+    pub fn next(&mut self) -> Event {
         match self.state {
             State::Idle => {
                 let mut headers = [httparse::EMPTY_HEADER; 16];
