@@ -1,28 +1,35 @@
 use pyo3::prelude::*;
 
-
-#[pyclass(subclass)] 
+#[pyclass(subclass)]
 pub struct Protocol {
-    transport: Option<PyObject>
+    transport: Option<PyObject>,
 }
 
 #[macro_export]
 macro_rules! wrap_transport_method0 {
     ($method_name:ident) => {
         fn $method_name(&self, py: Python<'_>) {
-            self.transport.as_ref().unwrap().call_method0(py, stringify!($method_name)).unwrap();
+            self.transport
+                .as_ref()
+                .unwrap()
+                .call_method0(py, stringify!($method_name))
+                .unwrap();
         }
-    }
+    };
 }
 pub use wrap_transport_method0;
 
 #[macro_export]
 macro_rules! wrap_transport_method1 {
     ($method_name:ident, $param_name:ident, $param_type:ty) => {
-        fn $method_name (&self, py: Python<'_>, $param_name: $param_type) {
-            self.transport.as_ref().unwrap().call_method1(py, stringify!($method_name), ($param_name,)).unwrap();
+        fn $method_name(&self, py: Python<'_>, $param_name: $param_type) {
+            self.transport
+                .as_ref()
+                .unwrap()
+                .call_method1(py, stringify!($method_name), ($param_name,))
+                .unwrap();
         }
-    }
+    };
 }
 pub use wrap_transport_method1;
 
@@ -41,11 +48,11 @@ macro_rules! protocol_default_methods {
             }
             Ok(())
         }
-    
+
         fn __clear__(&mut self) {
             self.transport = None;
         }
-    }
+    };
 }
 pub use protocol_default_methods;
 
@@ -53,7 +60,6 @@ impl Protocol {
     wrap_transport_method1!(write, data, &[u8]);
     wrap_transport_method0!(close);
 }
-
 
 #[pymethods]
 impl Protocol {
@@ -81,9 +87,8 @@ impl Protocol {
     }
 
     #[allow(unused_variables)]
-    fn connection_lost(self_: PyRef<'_, Self>, err: &PyAny) -> PyResult<()>{
+    fn connection_lost(self_: PyRef<'_, Self>, err: &PyAny) -> PyResult<()> {
         println!("Closed!");
         Ok(())
     }
 }
-

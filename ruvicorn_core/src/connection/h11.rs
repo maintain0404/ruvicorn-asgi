@@ -68,7 +68,7 @@ mod special_headers {
 }
 
 impl Http11Connection {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             buffer: BytesMut::new(),
             state: State::Idle,

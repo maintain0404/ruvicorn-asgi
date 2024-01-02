@@ -1,11 +1,10 @@
 use crate::{
-    protocol::_base::{protocol_default_methods, Protocol},
+    connection::h11::{Event, Http11Connection},
     wrap_transport_method0, wrap_transport_method1,
-    connection::h11::{Http11Connection, Event}
 };
 use pyo3::prelude::*;
 
-#[pyclass(extends=Protocol, subclass)]
+#[pyclass]
 pub struct Http11Protocol {
     transport: Option<PyObject>,
     connection: Http11Connection,
@@ -17,7 +16,7 @@ impl Http11Protocol {
 
     fn handle_event(&mut self, py: Python<'_>, event: &Event) {
         match event {
-            Event::PartialRequest => {},
+            Event::PartialRequest => {}
             Event::RequestErr => self.send_400(py),
             Event::Request(_) => todo!(),
             Event::Data(_) => todo!(),
@@ -27,12 +26,12 @@ impl Http11Protocol {
         }
     }
 
-    fn close_connection(&self, py: Python<'_>){
+    fn close_connection(&self, py: Python<'_>) {
         self.close(py);
     }
 
     fn send_400(&self, py: Python<'_>) {
-        self.write(py, b"HTTP/1.1 400 BAD_REQEUST\r\n\r\n");
+        self.write(py, b"HTTP/1.1 400 BAD_REQUEST\r\n\r\n");
         self.close(py);
     }
 }
@@ -40,7 +39,18 @@ impl Http11Protocol {
 #[pymethods]
 #[allow(unused_variables)]
 impl Http11Protocol {
-    protocol_default_methods!();
+    #[new]
+    fn new() -> Self {
+        Self {
+            transport: None,
+            connection: Http11Connection::new(),
+        }
+    }
+
+    fn connection_made(&mut self, transport: PyObject) -> PyResult<()> {
+        self.transport = Some(transport);
+        Ok(())
+    }
 
     fn data_received(&mut self, py: Python<'_>, data: &[u8]) -> PyResult<()> {
         self.connection.feed(data);
@@ -57,5 +67,16 @@ impl Http11Protocol {
     fn connection_lost(self_: PyRef<'_, Self>, err: &PyAny) -> PyResult<()> {
         println!("Closed!");
         Ok(())
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        if let Some(obj) = &self.transport {
+            visit.call(obj)?
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.transport = None;
     }
 }
