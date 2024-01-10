@@ -18,8 +18,14 @@ impl Http11Protocol {
         match event {
             Event::PartialRequest => {}
             Event::RequestErr => self.send_400(py),
-            Event::Request(_) => todo!(),
-            Event::Data(_) => todo!(),
+            Event::Request => {
+                let next = self.connection.next();
+                self.handle_event(py, &next);
+            }
+            Event::Data(data) => {
+                let data_u8 = data.as_ref();
+                println!("{}", std::str::from_utf8(data_u8).unwrap());
+            }
             Event::ChunkedData(_, _) => todo!(),
             Event::Eof => todo!(),
             Event::Close => self.close_connection(py),

@@ -17,15 +17,10 @@ pub enum KeepAlive {
 }
 
 #[derive(Debug)]
-pub enum UpgradeType {
-    WebSocket,
-}
-
-#[derive(Debug)]
 pub enum Payload {
-    Upgrade(UpgradeType),
+    WebSocketUpgrade,
     ChunkedPayload,
-    Payload,
+    Payload(u64),
     None,
 }
 
@@ -33,7 +28,7 @@ pub enum Payload {
 pub enum Event {
     PartialRequest,
     RequestErr,
-    Request(Payload),
+    Request,
     Data(Bytes),
     ChunkedData(Bytes, bool),
     Eof,
@@ -58,6 +53,7 @@ pub struct Http11Connection {
     state: State,
     offset: usize,
     keep_alive: KeepAlive,
+    payload: Payload,
 }
 
 mod special_headers {
@@ -74,11 +70,16 @@ impl Http11Connection {
             state: State::Idle,
             offset: 0,
             keep_alive: KeepAlive::None,
+            payload: Payload::None,
         }
     }
 
-    fn _iterate_headers(&self, headers: &[httparse::Header]) -> Event {
-        let mut content_length = -1;
+    fn _get_data_not_ready(&mut self) -> (Bytes, bool) {
+        panic!()
+    }
+
+    fn _iterate_headers(&self, headers: &[httparse::Header]) -> Result<Payload, ()> {
+        let mut content_length: u64 = 0;
 
         let mut handled_te = false;
         let mut chunked = false;
@@ -91,28 +92,28 @@ impl Http11Connection {
             let value = if let Ok(v) = std::str::from_utf8(header.value) {
                 v
             } else {
-                return Event::RequestErr;
+                return Result::Err(());
             }
             .trim();
 
             if special_headers::CONTENT_LENGTH.eq_ignore_ascii_case(name) {
                 // Content Length Header duplicate.
-                if content_length != -1 || chunked {
+                if content_length != 0 || chunked {
                     test_trace!(
                         "h11.header.content-length-duplicate",
                         "Content-Length header duplicate or Transfer-Encoding is already set chunked."
                     );
-                    return Event::RequestErr;
+                    return Result::Err(());
                 }
 
-                if let Ok(len) = value.parse::<i64>() {
+                if let Ok(len) = value.parse::<u64>() {
                     content_length = len;
                 } else {
                     test_trace!(
                         "h11.header.invalid-content-length",
                         "Invalid Content-Length Header"
                     );
-                    return Event::RequestErr;
+                    return Result::Err(());
                 }
             } else if special_headers::TRANSFER_ENCODING.eq_ignore_ascii_case(name) {
                 if handled_te {
@@ -120,7 +121,7 @@ impl Http11Connection {
                         "h11.header.transfer-encoding-duplicate",
                         "Tranfer-Encoding header is duplicated."
                     );
-                    return Event::RequestErr;
+                    return Result::Err(());
                 } else {
                     handled_te = true;
                 }
@@ -132,13 +133,13 @@ impl Http11Connection {
                                 "h11.header.content-length-with-chunked",
                                 "Content-Length headerris already set."
                             );
-                            return Event::RequestErr;
+                            return Result::Err(());
                         }
                         chunked = true;
                     } else if "identify".eq_ignore_ascii_case(eachv) {
                         // Pass
                     } else {
-                        return Event::RequestErr;
+                        return Result::Err(());
                     }
                 }
             } else if special_headers::CONNECTION.eq_ignore_ascii_case(name) {
@@ -153,23 +154,33 @@ impl Http11Connection {
         }
 
         if content_length > 0 {
-            return Event::Request(Payload::Payload);
+            return Ok(Payload::Payload(content_length));
         } else if chunked {
-            return Event::Request(Payload::ChunkedPayload);
+            return Ok(Payload::ChunkedPayload);
         } else {
-            return Event::Request(Payload::None);
+            return Ok(Payload::None);
         }
     }
 
-    fn _next_chunked_data(&self) -> (Bytes, bool) {
-
-        (Bytes::from_static(b""), false)
+    fn next_data(&mut self) -> (Bytes, bool) {
+        match self.payload {
+            Payload::WebSocketUpgrade => todo!(),
+            Payload::ChunkedPayload => todo!(),
+            Payload::Payload(length) => {
+                self.state = State::Eof;
+                (
+                    self.buffer
+                        .to_owned()
+                        .freeze()
+                        .split_off(self.offset)
+                        .split_to(length as usize),
+                    false,
+                )
+            }
+            Payload::None => todo!(),
+        }
     }
 
-    fn _data(&self) -> Bytes {
-        Bytes::from_static(b"")
-    }
- 
     pub fn feed(&mut self, data: &[u8]) {
         self.buffer.extend(data);
     }
@@ -184,16 +195,13 @@ impl Http11Connection {
                         httparse::Status::Complete(offset) => {
                             self.offset = offset;
                             self.state = State::RequestFinished;
-                            let ev = self._iterate_headers(&req.headers);
-                            if let Event::Request(payload) = &ev {
-                                match payload {
-                                    Payload::Upgrade(_) => {},
-                                    Payload::ChunkedPayload => {},
-                                    Payload::Payload => {},
-                                    Payload::None => {},
-                                }
+                            let res = self._iterate_headers(&req.headers);
+                            if let Ok(payload) = res {
+                                self.payload = payload;
+                                Event::Request
+                            } else {
+                                Event::RequestErr
                             }
-                            ev
                         }
                         httparse::Status::Partial => Event::PartialRequest,
                     },
@@ -203,10 +211,36 @@ impl Http11Connection {
                     }
                 }
             }
-            State::RequestFinished => Event::Data(Bytes::new()),
+            State::RequestFinished => match self.payload {
+                Payload::WebSocketUpgrade => todo!(),
+                Payload::ChunkedPayload => todo!(),
+                Payload::Payload(length) => {
+                    println!("Payload!!!!!!");
+                    self.state = State::Eof;
+                    let data = self.next_data();
+                    Event::Data(data.0)
+                }
+                Payload::None => {
+                    self.state = State::Eof;
+                    Event::Eof
+                }
+            },
             State::Eof => {
-                self.state = State::Idle;
-                Event::Eof
+                match self.keep_alive {
+                    KeepAlive::KeepAlive => {
+                        self.state = State::Idle;
+                        Event::Eof
+                    }
+                    KeepAlive::Close => {
+                        self.state = State::Closed;
+                        Event::Close
+                    }
+                    KeepAlive::None => {
+                        // HTTP/1.1 default is keep connection.
+                        self.state = State::Idle;
+                        Event::Eof
+                    }
+                }
             }
             State::Closed => Event::Close,
         }
@@ -230,7 +264,8 @@ mod tests {
         let mut conn = Http11Connection::new();
 
         conn.feed(b"GET /test HTTP/1.1\r\n\r\n");
-        assert!(matches!(dbg!(conn.next()), Event::Request(Payload::None)))
+        assert!(matches!(dbg!(conn.next()), Event::Request));
+        assert!(matches!(conn.payload, Payload::None));
     }
 
     #[test]
@@ -238,21 +273,20 @@ mod tests {
         let mut conn = Http11Connection::new();
 
         conn.feed(b"GET /test HTTP/1.1\r\nTransfer-Encoding:chunked\r\n\r\n");
-        assert!(matches!(
-            dbg!(conn.next()),
-            Event::Request(Payload::ChunkedPayload)
-        ))
+        assert!(matches!(dbg!(conn.next()), Event::Request));
+        assert!(matches!(conn.payload, Payload::ChunkedPayload));
     }
 
     #[test]
     fn test_post_request() {
         let mut conn = Http11Connection::new();
 
-        conn.feed(b"GET /test HTTP/1.1\r\nContent-Length:1\r\n\r\n");
-        assert!(matches!(
-            dbg!(conn.next()),
-            Event::Request(Payload::Payload)
-        ))
+        conn.feed(b"POST /test HTTP/1.1\r\nContent-Length:1\r\n\r\na");
+        assert!(matches!(dbg!(conn.next()), Event::Request));
+        assert!(matches!(conn.payload, Payload::Payload(1)));
+
+        let data = Bytes::from_static(b"a");
+        assert!(matches!(conn.next(), Event::Data(data)));
     }
 
     #[test]
