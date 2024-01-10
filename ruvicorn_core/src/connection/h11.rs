@@ -32,6 +32,7 @@ pub enum Event {
     Data(Bytes),
     ChunkedData(Bytes, bool),
     Eof,
+    Idle,
     Close,
 }
 
@@ -74,11 +75,7 @@ impl Http11Connection {
         }
     }
 
-    fn _get_data_not_ready(&mut self) -> (Bytes, bool) {
-        panic!()
-    }
-
-    fn _iterate_headers(&self, headers: &[httparse::Header]) -> Result<Payload, ()> {
+    fn _iterate_headers(&self, headers: &[httparse::Header]) -> Result<(Payload, KeepAlive), ()> {
         let mut content_length: u64 = 0;
 
         let mut handled_te = false;
@@ -154,11 +151,11 @@ impl Http11Connection {
         }
 
         if content_length > 0 {
-            return Ok(Payload::Payload(content_length));
+            return Ok((Payload::Payload(content_length), keep_alive));
         } else if chunked {
-            return Ok(Payload::ChunkedPayload);
+            return Ok((Payload::ChunkedPayload, keep_alive));
         } else {
-            return Ok(Payload::None);
+            return Ok((Payload::None, keep_alive));
         }
     }
 
@@ -195,9 +192,9 @@ impl Http11Connection {
                         httparse::Status::Complete(offset) => {
                             self.offset = offset;
                             self.state = State::RequestFinished;
-                            let res = self._iterate_headers(&req.headers);
-                            if let Ok(payload) = res {
+                            if let Ok((payload, keep_alive)) = self._iterate_headers(&req.headers) {
                                 self.payload = payload;
+                                self.keep_alive = keep_alive;
                                 Event::Request
                             } else {
                                 Event::RequestErr
@@ -215,7 +212,6 @@ impl Http11Connection {
                 Payload::WebSocketUpgrade => todo!(),
                 Payload::ChunkedPayload => todo!(),
                 Payload::Payload(length) => {
-                    println!("Payload!!!!!!");
                     self.state = State::Eof;
                     let data = self.next_data();
                     Event::Data(data.0)
@@ -227,18 +223,14 @@ impl Http11Connection {
             },
             State::Eof => {
                 match self.keep_alive {
-                    KeepAlive::KeepAlive => {
-                        self.state = State::Idle;
-                        Event::Eof
-                    }
                     KeepAlive::Close => {
                         self.state = State::Closed;
                         Event::Close
                     }
-                    KeepAlive::None => {
-                        // HTTP/1.1 default is keep connection.
+                    // HTTP/1.1 default is keep connection.
+                    _ => {
                         self.state = State::Idle;
-                        Event::Eof
+                        Event::Idle
                     }
                 }
             }
@@ -321,5 +313,25 @@ mod tests {
 
         conn.feed(b"GET /test HTTP/1.1\r\nContent-Length:1\r\nTransfer-Encoding:dup\r\n\r\n");
         assert!(matches!(dbg!(conn.next()), Event::RequestErr))
+    }
+
+    #[test]
+    fn test_keep_alive() {
+        let mut conn = Http11Connection::new();
+
+        conn.feed(b"GET /test HTTP/1.1\r\nConnection: keep-alive\r\n\r\n");
+        assert!(matches!(dbg!(conn.next()), Event::Request));
+        assert!(matches!(dbg!(conn.next()), Event::Eof));
+        assert!(matches!(dbg!(conn.next()), Event::Idle));
+    }
+
+    #[test]
+    fn test_close_connection() {
+        let mut conn = Http11Connection::new();
+
+        conn.feed(b"GET /test HTTP/1.1\r\nConnection: close\r\n\r\n");
+        assert!(matches!(dbg!(conn.next()), Event::Request));
+        assert!(matches!(dbg!(conn.next()), Event::Eof));
+        assert!(matches!(dbg!(conn.next()), Event::Close));
     }
 }
