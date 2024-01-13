@@ -1,0 +1,5 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "./ruvicorn_core/Cargo.toml"
+    ]
+}
