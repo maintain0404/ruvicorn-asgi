@@ -1,0 +1,16 @@
+{
+  "folders": [
+    {
+      "path": "./",
+      "name": "whole"
+    },
+    {
+        "path": "./ruvicorn_asgi",
+        "name": "asgi"
+    },
+    {
+        "path": "./ruvicorn_core",
+        "name": "core"
+    }
+  ]
+}
