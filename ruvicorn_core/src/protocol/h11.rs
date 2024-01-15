@@ -25,11 +25,24 @@ impl Http11Protocol {
             Event::Data(data) => {
                 let data_u8 = data.as_ref();
                 println!("{}", std::str::from_utf8(data_u8).unwrap());
+                // TODO: Run ASGI app here.
             }
             Event::ChunkedData(_, _) => todo!(),
-            Event::Eof => todo!(),
+            Event::Eof => {
+                let next = self.connection.next();
+                self.handle_event(py, &next);
+            },
             Event::Close => self.close_connection(py),
+            Event::Idle => self.preserve_timeout(),
         }
+    }
+
+    fn preserve_timeout(&self) {
+
+    }
+
+    fn reset_timeout(&mut self) {
+
     }
 
     fn close_connection(&self, py: Python<'_>) {
@@ -59,6 +72,7 @@ impl Http11Protocol {
     }
 
     fn data_received(&mut self, py: Python<'_>, data: &[u8]) -> PyResult<()> {
+        self.reset_timeout();
         self.connection.feed(data);
         let event = self.connection.next();
         self.handle_event(py, &event);
