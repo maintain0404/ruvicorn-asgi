@@ -1,4 +1,3 @@
-use std::{path, sync::mpsc::RecvError};
 
 use crate::connection::subproto::SubProtocol;
 use bytes::{Bytes, BytesMut};
@@ -177,17 +176,18 @@ impl RequestHead {
         let buf_ptr = buffer.as_ptr() as usize;
 
         let name_ptr = name.as_ptr() as usize;
+        dbg!(buffer, name_ptr, buf_ptr);
         let name_bytes = buffer
             .clone()
             .split_off(name_ptr - buf_ptr)
-            .split_to(name_ptr - buf_ptr + name.len())
+            .split_to(name.len())
             .freeze();
 
         let value_ptr = value.as_ptr() as usize;
         let value_bytes = buffer
             .clone()
             .split_off(value_ptr - buf_ptr)
-            .split_to(value_ptr - buf_ptr + name.len())
+            .split_to(name.len())
             .freeze();
 
         return (name_bytes, value_bytes);
@@ -208,6 +208,9 @@ impl RequestHead {
         let mut bytes_headers: Vec<(Bytes, Bytes)> = Vec::with_capacity(MAX_HEADERS);
 
         for header in headers.iter() {
+            if header.name.is_empty() {
+                break;
+            }
             let bytes_header = self.header_into_bytes(buffer, header.name, header.value);
             bytes_headers.push(bytes_header);
 
@@ -215,6 +218,7 @@ impl RequestHead {
             let value = if let Ok(v) = std::str::from_utf8(header.value) {
                 v
             } else {
+                dbg!("Header value parsing failed.");
                 return Result::Err(());
             }
             .trim();
@@ -224,6 +228,7 @@ impl RequestHead {
                     match host_opt {
                         // Host header duplicate.
                         Some(_) => {
+                            dbg!("Host header duplicate.");
                             return Result::Err(());
                         }
                         None => {
@@ -243,6 +248,7 @@ impl RequestHead {
                 name if true == CONTENT_LENGTH.eq_ignore_ascii_case(name) => match content_length {
                     // Content-Length header duplicate.
                     Some(_) => {
+                        dbg!("Content-Length header duplicate.");
                         return Result::Err(());
                     }
                     // Try parsing Content-Length Header.
@@ -259,6 +265,7 @@ impl RequestHead {
                 },
                 name if true == TRANSFER_ENCODING.eq_ignore_ascii_case(name) => {
                     if handled_te {
+                        dbg!("Transfer-Encoding header duplicate.");
                         return Result::Err(());
                     }
 
@@ -269,6 +276,7 @@ impl RequestHead {
                             }
                             chunked = true;
                         } else {
+                            dbg!("Transfer-Encoding header value duplicate.");
                             return Result::Err(());
                         }
                     }
@@ -319,7 +327,7 @@ mod tests {
         let mut conn = RequestHead::new();
         let mut buffer = BytesMut::new();
 
-        let ev = dbg!(conn.recv(&mut buffer, b"GET /test HTTP/1.1\r\n\r\n"));
+        let ev = dbg!(conn.recv(&mut buffer, b"GET /test HTTP/1.1\r\nHost:localhost\r\n\r\n"));
         assert!(matches!(ev, HeadEvent::NoBody { .. }));
     }
 
@@ -330,7 +338,7 @@ mod tests {
 
         let ev = dbg!(conn.recv(
             &mut buffer,
-            b"GET /test HTTP/1.1\r\nTransfer-Encoding:chunked\r\n\r\n"
+            b"GET /test HTTP/1.1\r\nTransfer-Encoding:chunked\r\nHost:localhost\r\n\r\n"
         ));
         assert!(matches!(ev, HeadEvent::ChunkedBody { .. }));
     }
@@ -342,7 +350,7 @@ mod tests {
 
         let ev = dbg!(conn.recv(
             &mut buffer,
-            b"POST /test HTTP/1.1\r\nContent-Length:1\r\n\r\na"
+            b"POST /test HTTP/1.1\r\nContent-Length:1\r\nHost:localhost\r\n\r\na"
         ),);
         assert!(matches!(
             ev,
@@ -360,7 +368,7 @@ mod tests {
 
         let ev = dbg!(conn.recv(
             &mut buffer,
-            b"GET /test HTTP/1.1\r\nContent-Length:1\r\nContent-Length:1\r\n\r\n"
+            b"GET /test HTTP/1.1\r\nContent-Length:1\r\nContent-Length:1\r\nHost:localhost\r\n\r\n"
         ));
         assert!(matches!(ev, HeadEvent::RequestErr))
     }
@@ -372,7 +380,7 @@ mod tests {
 
         let ev = dbg!(conn.recv(
             &mut buffer,
-            b"GET /test HTTP/1.1\r\nContent-Length:s\r\n\r\n"
+            b"GET /test HTTP/1.1\r\nContent-Length:s\r\nHost:localhost\r\n\r\n"
         ));
         assert!(matches!(ev, HeadEvent::RequestErr))
     }
@@ -384,7 +392,7 @@ mod tests {
 
         let ev = dbg!(conn.recv(
             &mut buffer,
-            b"GET /test HTTP/1.1\r\nTransfer-Encoding:chunked\r\nTransfer-Encoding:dup\r\n\r\n",
+            b"GET /test HTTP/1.1\r\nTransfer-Encoding:chunked\r\nTransfer-Encoding:dup\r\nHost:localhost\r\n\r\n",
         ));
         assert!(matches!(ev, HeadEvent::RequestErr))
     }
@@ -396,7 +404,7 @@ mod tests {
 
         let ev = dbg!(conn.recv(
             &mut buffer,
-            b"GET /test HTTP/1.1\r\nContent-Length:1\r\nTransfer-Encoding:dup\r\n\r\n"
+            b"GET /test HTTP/1.1\r\nContent-Length:1\r\nTransfer-Encoding:dup\r\nHost:localhost\r\n\r\n"
         ));
         assert!(matches!(ev, HeadEvent::RequestErr));
     }
@@ -406,9 +414,17 @@ mod tests {
         let mut conn = RequestHead::new();
         let mut buffer = BytesMut::new();
 
-        let ev = dbg!(
-            conn.recv(&mut buffer, b"GET /test HTTP/1.1\r\nConnection: keep-alive\r\n\r\n"));
-        assert!(matches!(ev, HeadEvent::NoBody { keep_alive: true, ..}));
+        let ev = dbg!(conn.recv(
+            &mut buffer,
+            b"GET /test HTTP/1.1\r\nConnection: keep-alive\r\nHost:localhost\r\n\r\n"
+        ));
+        assert!(matches!(
+            ev,
+            HeadEvent::NoBody {
+                keep_alive: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -416,9 +432,17 @@ mod tests {
         let mut conn = RequestHead::new();
         let mut buffer = BytesMut::new();
 
-        let ev = dbg!(
-            conn.recv(&mut buffer, b"GET /test HTTP/1.1\r\nConnection: close\r\n\r\n"));
-        assert!(matches!(ev, HeadEvent::NoBody { keep_alive: false, .. }));
+        let ev = dbg!(conn.recv(
+            &mut buffer,
+            b"GET /test HTTP/1.1\r\nConnection: close\r\nHost:localhost\r\n\r\n"
+        ));
+        assert!(matches!(
+            ev,
+            HeadEvent::NoBody {
+                keep_alive: false,
+                ..
+            }
+        ));
     }
 
     //TODO! test when headers are more than MAX_HEADERS.
