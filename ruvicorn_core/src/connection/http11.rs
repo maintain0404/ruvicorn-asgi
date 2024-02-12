@@ -1,6 +1,6 @@
 
 use crate::connection::subproto::SubProtocol;
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use httparse;
 
 use super::subproto::RecvSubProtocol;
@@ -11,12 +11,6 @@ const TRANSFER_ENCODING: &str = "Transfer-Encoding";
 const CONTENT_LENGTH: &str = "Content-Length";
 const UPGRADE: &str = "Upgrade";
 const MAX_HEADERS: usize = 96;
-
-struct Request {
-    raw_path: String,
-    method: String,
-    headers: Vec<(Bytes, Bytes)>,
-}
 
 enum BodyType {
     Length { length: u64 },
@@ -78,9 +72,6 @@ impl Default for RequestHead {
 }
 
 impl SubProtocol for RequestHead {
-    fn step_from(handler: impl SubProtocol) -> Self {
-        RequestHead::default()
-    }
 }
 
 impl RecvSubProtocol for RequestHead {
@@ -91,7 +82,7 @@ impl RecvSubProtocol for RequestHead {
         let mut headers = [httparse::EMPTY_HEADER; 96];
         let mut req = httparse::Request::new(&mut headers);
         let parsed = req.parse(buffer);
-        let mut body_start_from: usize;
+        let body_start_from: usize;
 
         match parsed {
             Ok(status) => match status {
@@ -128,7 +119,9 @@ impl RecvSubProtocol for RequestHead {
         }
 
         match self.iterate_and_check_headers(buffer, &headers) {
-            Ok((bytes_header, host, body_type, keep_alive)) => match body_type {
+            Ok((bytes_header, host, body_type, keep_alive)) => {
+                buffer.advance(body_start_from);
+                match body_type {
                 BodyType::Length { length } => {
                     return Self::RecvEvent::LengthedBody {
                         method: method,
@@ -157,7 +150,7 @@ impl RecvSubProtocol for RequestHead {
                         keep_alive: keep_alive,
                     }
                 }
-            },
+            }},
             Err(_) => {
                 return Self::RecvEvent::RequestErr;
             }
@@ -307,10 +300,47 @@ impl RequestHead {
     }
 }
 
+
+// Request body
+#[derive(Debug)]
+enum LengthedBodyEvent {
+    Partial,
+    Complete(Bytes),
+    ToLong,
+}
+
+#[derive(Debug)]
+struct LengthedBody {
+    length: usize
+}
+
+impl SubProtocol for LengthedBody {
+}
+
+impl RecvSubProtocol for LengthedBody {
+    type RecvEvent = LengthedBodyEvent;
+
+    fn recv(&mut self, buffer: &mut BytesMut, data: &[u8]) -> Self::RecvEvent {
+        buffer.extend_from_slice(data);
+
+        if buffer.len() == self.length {
+            Self::RecvEvent::Complete(buffer.clone().freeze())
+        } else if buffer.len() < self.length {
+            Self::RecvEvent::Partial
+        } else {
+            Self::RecvEvent::ToLong
+        }
+    }
+}
+
+impl LengthedBody {
+    fn new(length: usize) -> Self {
+        Self { length: length }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use pyo3::buffer;
-
     use super::*;
 
     #[test]
@@ -446,4 +476,53 @@ mod tests {
     }
 
     //TODO! test when headers are more than MAX_HEADERS.
+
+    #[test]
+    fn test_lengthed_body_precise_size() {
+        let mut conn = LengthedBody::new(12);
+        let mut buffer = BytesMut::new();
+        let ev = dbg!(conn.recv(
+            &mut buffer,
+            b"Hello World!"
+        ));
+
+        assert!(matches!(
+            ev,
+            LengthedBodyEvent::Complete(_)
+        ));
+
+        if let LengthedBodyEvent::Complete(data) = ev {
+            assert_eq!(data, Bytes::from_static(b"Hello World!"))
+        }
+    }
+
+    #[test]
+    fn test_lengthed_body_partial() {
+        let mut conn = LengthedBody::new(15);
+        let mut buffer = BytesMut::new();
+        let ev = dbg!(conn.recv(
+            &mut buffer,
+            b"Hello World!"
+        ));
+
+        assert!(matches!(
+            ev,
+            LengthedBodyEvent::Partial
+        ));
+    }
+
+    #[test]
+    fn test_lengthed_body_too_long() {
+        let mut conn = LengthedBody::new(10);
+        let mut buffer = BytesMut::new();
+        let ev = dbg!(conn.recv(
+            &mut buffer,
+            b"Hello World!"
+        ));
+
+        assert!(matches!(
+            ev,
+            LengthedBodyEvent::ToLong
+        ));
+    }
 }

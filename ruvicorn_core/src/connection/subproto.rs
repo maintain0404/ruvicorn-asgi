@@ -7,7 +7,7 @@ struct Http11Config {
 
 
 pub trait SubProtocol {
-    fn step_from(handler: impl SubProtocol) -> Self;
+
 }
 
 pub trait RecvSubProtocol: SubProtocol {
