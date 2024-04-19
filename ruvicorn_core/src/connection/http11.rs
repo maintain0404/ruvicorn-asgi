@@ -3,7 +3,7 @@ use crate::connection::subproto::SubProtocol;
 use bytes::{Buf, Bytes, BytesMut};
 use httparse;
 
-use super::subproto::RecvSubProtocol;
+use super::subproto::{RecvSubProtocol, SendSubProtocol};
 
 const HOST: &str = "Host";
 const CONNECTION: &str = "Connection";
@@ -336,6 +336,27 @@ impl RecvSubProtocol for LengthedBody {
 impl LengthedBody {
     fn new(length: usize) -> Self {
         Self { length: length }
+    }
+}
+
+// Response Head
+enum ResponseHeadSendEvent {
+
+}
+
+struct ResponseHead {
+
+}
+
+impl SubProtocol for ResponseHead {
+    
+}
+
+impl SendSubProtocol for ResponseHead {
+    type SendEvent = ResponseHeadSendEvent;
+
+    fn send(&mut self, buffer: &mut BytesMut, data: &[u8]) -> Self::SendEvent {
+        todo!()
     }
 }
 

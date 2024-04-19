@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 
 mod connection;
 mod protocol;
+mod event;
 
 /// A Python module implemented in Rust.
 #[pymodule]
