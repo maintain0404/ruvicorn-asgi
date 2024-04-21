@@ -1,168 +1,44 @@
-use bytes::Bytes;
-use pyo3::{types::{PyDict, PyString, PyType}, PyDowncastError, PyErr};
+use crate::event::util;
+use crate::errors::AsgiSpecError;
+use crate::types::PyHeader;
+use pyo3::types::PyDict;
 
-pub struct AsgiSendResponseStart {
-    status: u32,
-    headers: Vec<(Bytes, Bytes)>,
-    trailers: bool
+pub trait ASGISendResponseStart: Sized {
+    fn get_status(&self) -> Result<usize, AsgiSpecError>;
+
+    fn get_headers(&self) -> Vec<PyHeader>;
+
+    fn get_trailers(&self) -> bool;
 }
 
-pub struct AsgiSendResponseBody {
-    body: Bytes,
-    more_body: bool
-}
+impl ASGISendResponseStart for &PyDict {
+    fn get_status(&self) -> Result<usize, AsgiSpecError> {
+        util::get_item_with_casting(self, "status")
+    }
 
+    fn get_headers(&self) -> Vec<PyHeader> {
+        util::get_item_with_default(self, "headers", Vec::new())
+    }
 
-pub enum AsgiSend {
-    Start(AsgiSendResponseStart),
-    Body(AsgiSendResponseBody),
-}
-
-
-#[derive(Debug)]
-pub struct InvalidAsgiSpec {}
-
-
-impl From<PyDowncastError<'_>> for InvalidAsgiSpec {
-    fn from(value: PyDowncastError<'_>) -> Self {
-        todo!()
+    fn get_trailers(&self) -> bool {
+        util::get_item_with_default(self, "trailers", false)
     }
 }
 
-impl From<PyErr> for InvalidAsgiSpec {
-    fn from(value: PyErr) -> Self {
-        todo!()
+pub trait ASGISendResponseBody: Sized {
+    fn get_body(&self) -> &[u8];
+
+    fn get_more_body(&self) -> bool;
+}
+
+impl ASGISendResponseBody for &PyDict {
+    fn get_body(&self) -> &[u8] {
+        util::get_item_with_default(self, "body", b"")
+    }
+
+    fn get_more_body(&self) -> bool {
+        util::get_item_with_default(self, "more_body", false)
     }
 }
 
-impl TryFrom<&PyDict> for AsgiSendResponseStart {
-    type Error = InvalidAsgiSpec;
-
-    fn try_from(value: &PyDict) -> Result<Self, Self::Error> {
-        todo!()
-    }
-}
-
-impl TryFrom<&PyDict> for AsgiSendResponseBody {
-    type Error = InvalidAsgiSpec;
-
-    fn try_from(value: &PyDict) -> Result<Self, Self::Error> {
-        todo!()
-    }
-}
-
-impl TryFrom<&PyDict> for AsgiSend {
-    type Error = InvalidAsgiSpec;
-
-    fn try_from(value: &PyDict) -> Result<Self, InvalidAsgiSpec> {
-        match value.get_item("type") {
-            Some(type_) => {
-                let typestr = type_.downcast::<PyString>()?.to_str()?;
-                match typestr {
-                    "http.response.start" => {
-                        return Result::Ok(
-                            Self::Start(AsgiSendResponseStart::try_from(value)?)
-                        );
-                    },
-                    "http.response.body" => {
-                        return Result::Ok(
-                            Self::Body(AsgiSendResponseBody::try_from(value)?)
-                        );
-                    },
-                    _ => {
-                        return Result::Err(InvalidAsgiSpec{});
-                    }
-                }
-            },
-            None => {
-                return Result::Err(InvalidAsgiSpec{})
-            },
-        }
-    }
-}
-
-
-#[cfg(test)]
-mod test {
-    use std::convert;
-
-    use bytes::Bytes;
-    use pyo3::{types::PyDict, Python};
-
-    use crate::event::send::AsgiSendResponseBody;
-
-    use super::{AsgiSend, AsgiSendResponseStart};
-
-    #[test]
-    fn test_convert_http_response_start() {
-        Python::with_gil(|py|{
-            let result = py.eval("{'type':'http.response.body', 'status': 200, 'headers': [b'x-header-key':b'x-header-value'], 'trailers': False}", None, None)
-            .map_err(|e| {
-                e.print_and_set_sys_last_vars(py);
-            }).unwrap();
-            let res: &PyDict = result.extract().unwrap();
-            let converted = AsgiSend::try_from(res).unwrap();
-            let _headers: Vec<(Bytes, Bytes)> = vec![(
-                Bytes::from_static(b"x-header-key"),
-                Bytes::from_static(b"x-header-value")
-            )];
-            assert!(matches!(converted, AsgiSend::Start(AsgiSendResponseStart{
-                status: 200,
-                headers: _headers,
-                trailers: false
-            })))
-    });
-        
-    }
-
-    #[test]
-    fn test_convert_http_response_body_without_headers() {
-        Python::with_gil(|py|{
-            let result = py.eval("{'type':'http.response.body', 'status': 200, 'trailers': False}", None, None)
-            .map_err(|e| {
-                e.print_and_set_sys_last_vars(py);
-            }).unwrap();
-            let res: &PyDict = result.extract().unwrap();
-            let converted = AsgiSend::try_from(res).unwrap();
-            let _headers: Vec<(Bytes, Bytes)> = Vec::new();
-            assert!(matches!(converted, AsgiSend::Start(AsgiSendResponseStart{
-                status: 200,
-                headers: _headers,
-                trailers: false
-            })))
-        })
-    }
-
-    #[test]
-    fn test_convert_http_response_body_without_trailers() {
-        Python::with_gil(|py|{
-            let result = py.eval("{'type':'http.response.body', 'status': 200, 'headers': [b'x-header-key':b'x-header-value']}", None, None)
-            .map_err(|e| {
-                e.print_and_set_sys_last_vars(py);
-            }).unwrap();
-            let res: &PyDict = result.extract().unwrap();
-            let converted = AsgiSend::try_from(res).unwrap();
-            let _headers: Vec<(Bytes, Bytes)> = vec![(
-                Bytes::from_static(b"x-header-key"),
-                Bytes::from_static(b"x-header-value")
-            )];
-            assert!(matches!(converted, AsgiSend::Start(AsgiSendResponseStart{
-                status: 200,
-                headers: _headers,
-                trailers: false
-            })))
-        })
-    }
-
-    #[test]
-    fn test_convert_http_response_body_without_type() {
-        Python::with_gil(|py|{
-            let result = py.eval("{'status': 200, 'headers': [b'x-header-key':b'x-header-value'], 'trailers': False}", None, None)
-            .map_err(|e| {
-                e.print_and_set_sys_last_vars(py);
-            }).unwrap();
-            let res: &PyDict = result.extract().unwrap();
-            assert!(AsgiSend::try_from(res).is_err());
-        })
-    }
-}
+mod test {}

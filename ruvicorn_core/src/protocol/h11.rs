@@ -31,19 +31,15 @@ impl Http11Protocol {
             Event::Eof => {
                 let next = self.connection.next();
                 self.handle_event(py, &next);
-            },
+            }
             Event::Close => self.close_connection(py),
             Event::Idle => self.preserve_timeout(),
         }
     }
 
-    fn preserve_timeout(&self) {
+    fn preserve_timeout(&self) {}
 
-    }
-
-    fn reset_timeout(&mut self) {
-
-    }
+    fn reset_timeout(&mut self) {}
 
     fn close_connection(&self, py: Python<'_>) {
         self.close(py);

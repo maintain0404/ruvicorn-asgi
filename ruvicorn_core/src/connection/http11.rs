@@ -1,4 +1,3 @@
-
 use crate::connection::subproto::SubProtocol;
 use bytes::{Buf, Bytes, BytesMut};
 use httparse;
@@ -71,8 +70,7 @@ impl Default for RequestHead {
     }
 }
 
-impl SubProtocol for RequestHead {
-}
+impl SubProtocol for RequestHead {}
 
 impl RecvSubProtocol for RequestHead {
     type RecvEvent = HeadEvent;
@@ -122,35 +120,36 @@ impl RecvSubProtocol for RequestHead {
             Ok((bytes_header, host, body_type, keep_alive)) => {
                 buffer.advance(body_start_from);
                 match body_type {
-                BodyType::Length { length } => {
-                    return Self::RecvEvent::LengthedBody {
-                        method: method,
-                        path: path,
-                        headers: bytes_header,
-                        host: host,
-                        keep_alive: keep_alive,
-                        content_length: length,
+                    BodyType::Length { length } => {
+                        return Self::RecvEvent::LengthedBody {
+                            method: method,
+                            path: path,
+                            headers: bytes_header,
+                            host: host,
+                            keep_alive: keep_alive,
+                            content_length: length,
+                        }
+                    }
+                    BodyType::None => {
+                        return Self::RecvEvent::NoBody {
+                            method: method,
+                            path: path,
+                            headers: bytes_header,
+                            host: host,
+                            keep_alive: keep_alive,
+                        }
+                    }
+                    BodyType::Chunked => {
+                        return Self::RecvEvent::ChunkedBody {
+                            method: method,
+                            path: path,
+                            headers: bytes_header,
+                            host: host,
+                            keep_alive: keep_alive,
+                        }
                     }
                 }
-                BodyType::None => {
-                    return Self::RecvEvent::NoBody {
-                        method: method,
-                        path: path,
-                        headers: bytes_header,
-                        host: host,
-                        keep_alive: keep_alive,
-                    }
-                }
-                BodyType::Chunked => {
-                    return Self::RecvEvent::ChunkedBody {
-                        method: method,
-                        path: path,
-                        headers: bytes_header,
-                        host: host,
-                        keep_alive: keep_alive,
-                    }
-                }
-            }},
+            }
             Err(_) => {
                 return Self::RecvEvent::RequestErr;
             }
@@ -300,7 +299,6 @@ impl RequestHead {
     }
 }
 
-
 // Request body
 #[derive(Debug)]
 enum LengthedBodyEvent {
@@ -311,11 +309,10 @@ enum LengthedBodyEvent {
 
 #[derive(Debug)]
 struct LengthedBody {
-    length: usize
+    length: usize,
 }
 
-impl SubProtocol for LengthedBody {
-}
+impl SubProtocol for LengthedBody {}
 
 impl RecvSubProtocol for LengthedBody {
     type RecvEvent = LengthedBodyEvent;
@@ -340,17 +337,11 @@ impl LengthedBody {
 }
 
 // Response Head
-enum ResponseHeadSendEvent {
+enum ResponseHeadSendEvent {}
 
-}
+struct ResponseHead {}
 
-struct ResponseHead {
-
-}
-
-impl SubProtocol for ResponseHead {
-    
-}
+impl SubProtocol for ResponseHead {}
 
 impl SendSubProtocol for ResponseHead {
     type SendEvent = ResponseHeadSendEvent;
@@ -502,15 +493,9 @@ mod tests {
     fn test_lengthed_body_precise_size() {
         let mut conn = LengthedBody::new(12);
         let mut buffer = BytesMut::new();
-        let ev = dbg!(conn.recv(
-            &mut buffer,
-            b"Hello World!"
-        ));
+        let ev = dbg!(conn.recv(&mut buffer, b"Hello World!"));
 
-        assert!(matches!(
-            ev,
-            LengthedBodyEvent::Complete(_)
-        ));
+        assert!(matches!(ev, LengthedBodyEvent::Complete(_)));
 
         if let LengthedBodyEvent::Complete(data) = ev {
             assert_eq!(data, Bytes::from_static(b"Hello World!"))
@@ -521,29 +506,17 @@ mod tests {
     fn test_lengthed_body_partial() {
         let mut conn = LengthedBody::new(15);
         let mut buffer = BytesMut::new();
-        let ev = dbg!(conn.recv(
-            &mut buffer,
-            b"Hello World!"
-        ));
+        let ev = dbg!(conn.recv(&mut buffer, b"Hello World!"));
 
-        assert!(matches!(
-            ev,
-            LengthedBodyEvent::Partial
-        ));
+        assert!(matches!(ev, LengthedBodyEvent::Partial));
     }
 
     #[test]
     fn test_lengthed_body_too_long() {
         let mut conn = LengthedBody::new(10);
         let mut buffer = BytesMut::new();
-        let ev = dbg!(conn.recv(
-            &mut buffer,
-            b"Hello World!"
-        ));
+        let ev = dbg!(conn.recv(&mut buffer, b"Hello World!"));
 
-        assert!(matches!(
-            ev,
-            LengthedBodyEvent::ToLong
-        ));
+        assert!(matches!(ev, LengthedBodyEvent::ToLong));
     }
 }
