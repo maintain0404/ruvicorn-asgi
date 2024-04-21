@@ -1,6 +1,7 @@
 use protocol::h11::Http11Protocol;
 use pyo3::prelude::*;
 
+mod conn;
 mod connection;
 mod errors;
 mod event;
