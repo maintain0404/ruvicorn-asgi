@@ -1,6 +1,8 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 
-use crate::types::RsHeader;
+use crate::types::{PyHeader, RsHeader};
+
+use super::payload::{Payload as _, PayloadStepResult, PayloadType};
 
 const MAX_HEADERS: usize = 16;
 
@@ -17,7 +19,9 @@ enum State {
     // Ready to get request.
     Idle,
     // Request parse finished. Ready for get body.
-    RequestFinished,
+    RequestHeadFinished,
+    // Get all requet body data. Ready to response.
+    RequestBodyFinished,
     // Connection closed by error or finished all request/response cycle.
     Closed,
 }
@@ -26,9 +30,18 @@ enum State {
 #[allow(dead_code)]
 enum Input<'t> {
     // Feed data
-    Data(&'t [u8]),
+    RequestData(&'t [u8]),
     // Notice physical connection is closed.
     Disconnect,
+
+    ResponseStart {
+        status: usize,
+        headers: Vec<PyHeader<'t>>,
+    },
+    ResponseBody {
+        body: &'t [u8],
+        more_body: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -44,33 +57,20 @@ enum Output {
     // Request is finished.
 
     // Request finished with Content-Length header.
-    LengthedBody {
+    RequestHead {
         method: String,
         path: String,
         headers: Vec<RsHeader>,
-        keep_alive: bool,
-        content_length: u64,
     },
-    // Request finished with Content-Length header = 0.
-    NoBody {
-        method: String,
-        path: String,
-        headers: Vec<RsHeader>,
-        keep_alive: bool,
-    },
-    // Will be implemented later.
-    ChunkedBody {
-        method: String,
-        path: String,
-        headers: Vec<RsHeader>,
-        keep_alive: bool,
-    },
-    // UpgradeWebsocket will be added.
+    RequestBody(Bytes, bool),
+
+    ResponseStart(Bytes),
+    ResponseBody(Bytes),
 }
 
 #[allow(dead_code)]
 impl Output {
-    fn is_request_finished(&self) -> bool {
+    fn is_request_head_finished(&self) -> bool {
         return match self {
             Self::Partial => false,
             Self::RequestErr => false,
@@ -103,21 +103,12 @@ impl KeepAlive {
     }
 }
 
-#[derive(Debug)]
-pub enum Payload {
-    #[allow(dead_code)]
-    WebSocketUpgrade,
-    ChunkedPayload,
-    Payload(u64),
-    None,
-}
-
 struct Http11Connection {
     buffer: BytesMut,
     state: State,
     offset: usize,
     keep_alive: KeepAlive,
-    payload: Payload,
+    payload: PayloadType,
 }
 
 mod special_headers {
@@ -173,11 +164,14 @@ impl Http11Connection {
             state: State::Idle,
             offset: 0,
             keep_alive: KeepAlive::None,
-            payload: Payload::None,
+            payload: PayloadType::new_none(),
         }
     }
 
-    fn _iterate_headers(&self, headers: &[httparse::Header]) -> Result<(Payload, KeepAlive), ()> {
+    fn _iterate_headers(
+        &self,
+        headers: &[httparse::Header],
+    ) -> Result<(PayloadType, KeepAlive), ()> {
         let mut content_length: u64 = 0;
 
         let mut handled_te = false;
@@ -253,15 +247,18 @@ impl Http11Connection {
         }
 
         if content_length > 0 {
-            return Ok((Payload::Payload(content_length), keep_alive));
+            return Ok((
+                PayloadType::new_lengthed(content_length as usize),
+                keep_alive,
+            ));
         } else if chunked {
-            return Ok((Payload::ChunkedPayload, keep_alive));
+            return Ok((PayloadType::new_chunked(), keep_alive));
         } else {
-            return Ok((Payload::None, keep_alive));
+            return Ok((PayloadType::new_none(), keep_alive));
         }
     }
 
-    fn try_parse_request(&mut self) -> Output {
+    fn parse_request_head(&mut self) -> Output {
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut req = httparse::Request::new(&mut headers);
 
@@ -269,31 +266,15 @@ impl Http11Connection {
             Ok(status) => match status {
                 httparse::Status::Complete(offset) => {
                     self.offset = offset;
-                    self.state = State::RequestFinished;
+                    self.state = State::RequestHeadFinished;
                     if let Ok((payload, keep_alive)) = self._iterate_headers(&req.headers) {
                         self.payload = payload;
                         self.keep_alive = keep_alive;
-                        match self.payload {
-                            Payload::WebSocketUpgrade => todo!(),
-                            Payload::ChunkedPayload => Output::ChunkedBody {
-                                method: req.method.unwrap().to_owned(),
-                                path: req.path.unwrap().to_owned(),
-                                headers: cast_headers_to_rs_headers(&self.buffer, &headers),
-                                keep_alive: self.keep_alive.should_keep_alive(),
-                            },
-                            Payload::Payload(size) => Output::LengthedBody {
-                                method: req.method.unwrap().to_owned(),
-                                path: req.path.unwrap().to_owned(),
-                                headers: cast_headers_to_rs_headers(&self.buffer, &headers),
-                                keep_alive: self.keep_alive.should_keep_alive(),
-                                content_length: size,
-                            },
-                            Payload::None => Output::NoBody {
-                                method: req.method.unwrap().to_owned(),
-                                path: req.path.unwrap().to_owned(),
-                                headers: cast_headers_to_rs_headers(&self.buffer, &headers),
-                                keep_alive: self.keep_alive.should_keep_alive(),
-                            },
+
+                        Output::RequestHead {
+                            method: req.method.unwrap().to_owned(),
+                            path: req.path.unwrap().to_owned(),
+                            headers: cast_headers_to_rs_headers(&self.buffer, &headers),
                         }
                     } else {
                         self.state = State::Closed;
@@ -310,19 +291,37 @@ impl Http11Connection {
         }
     }
 
+    fn parse_body(&mut self) -> Output {
+        match self.payload.step(&mut self.buffer, self.offset) {
+            PayloadStepResult::Partial(body, offset) => {
+                self.offset = offset;
+                Output::RequestBody(body, false)
+            }
+            PayloadStepResult::Finished(body, offset) => {
+                self.offset = offset;
+                self.state = State::RequestBodyFinished;
+                Output::RequestBody(body, true)
+            }
+            PayloadStepResult::Err => Output::RequestErr,
+        }
+    }
+
     fn _feed(&mut self, data: &[u8]) -> Output {
         self.buffer.extend(data);
         match self.state {
-            State::Idle => self.try_parse_request(),
-            State::RequestFinished => todo!(),
+            State::Idle => self.parse_request_head(),
+            State::RequestHeadFinished => self.parse_body(),
+            State::RequestBodyFinished => todo!(),
             State::Closed => todo!(),
         }
     }
 
     fn step(&mut self, input: Input) -> Output {
         match input {
-            Input::Data(data) => self._feed(data),
+            Input::RequestData(data) => self._feed(data),
             Input::Disconnect => todo!(),
+            Input::ResponseStart { status, headers } => todo!(),
+            Input::ResponseBody { body, more_body } => todo!(),
         }
     }
 }
@@ -335,7 +334,7 @@ mod test {
     fn test_partial_request() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(b"GET /")));
+        let output = dbg!(conn.step(Input::RequestData(b"GET /")));
         assert!(matches!(output, Output::Partial))
     }
 
@@ -343,44 +342,46 @@ mod test {
     fn test_get_request() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(b"GET /test HTTP/1.1\r\nHost:localhost\r\n\r\n")));
-        assert!(matches!(output, Output::NoBody { .. }));
-        assert!(matches!(conn.state, State::RequestFinished));
+        let output = dbg!(conn.step(Input::RequestData(
+            b"GET /test HTTP/1.1\r\nHost:localhost\r\n\r\n"
+        )));
+        assert!(matches!(output, Output::RequestHead { .. }));
+        assert!(matches!(conn.payload, PayloadType::None(_)));
+        assert!(matches!(conn.state, State::RequestHeadFinished));
     }
 
     #[test]
     fn test_chunked() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"GET /test HTTP/1.1\r\nTransfer-Encoding:chunked\r\nHost:localhost\r\n\r\n"
         )));
-        assert!(matches!(output, Output::ChunkedBody { .. }));
-        assert!(matches!(conn.state, State::RequestFinished));
+        assert!(matches!(output, Output::RequestHead { .. }));
+        assert!(matches!(conn.payload, PayloadType::ChunkedPayload(_)));
+        assert!(matches!(conn.state, State::RequestHeadFinished));
     }
 
     #[test]
     fn test_post_request() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"POST /test HTTP/1.1\r\nContent-Length:1\r\nHost:localhost\r\n\r\na"
         )));
-        assert!(matches!(
-            output,
-            Output::LengthedBody {
-                content_length: 1,
-                ..
-            }
-        ));
-        assert!(matches!(conn.state, State::RequestFinished));
+        assert!(matches!(output, Output::RequestHead { .. }));
+
+        if let PayloadType::LengthedPayload(p) = conn.payload {
+            assert_eq!(p.to_consume, 1)
+        }
+        assert!(matches!(conn.state, State::RequestHeadFinished));
     }
 
     #[test]
     fn test_content_length_duplicate() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"GET /test HTTP/1.1\r\nContent-Length:1\r\nContent-Length:1\r\nHost:localhost\r\n\r\n"
         )));
         assert!(matches!(output, Output::RequestErr));
@@ -391,7 +392,7 @@ mod test {
     fn test_content_length_invalid() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"GET /test HTTP/1.1\r\nContent-Length:s\r\nHost:localhost\r\n\r\n"
         )));
         assert!(matches!(output, Output::RequestErr));
@@ -402,7 +403,7 @@ mod test {
     fn test_tranfer_encoding_duplicate() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"GET /test HTTP/1.1\r\nTransfer-Encoding:chunked\r\nTransfer-Encoding:dup\r\nHost:localhost\r\n\r\n",
         )));
         assert!(matches!(output, Output::RequestErr));
@@ -413,7 +414,7 @@ mod test {
     fn test_content_length_with_chunked() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"GET /test HTTP/1.1\r\nContent-Length:1\r\nTransfer-Encoding::chunked\r\nHost:localhost\r\n\r\n"
         )));
         assert!(matches!(output, Output::RequestErr));
@@ -424,34 +425,24 @@ mod test {
     fn test_keep_alive() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"GET /test HTTP/1.1\r\nConnection: keep-alive\r\nHost:localhost\r\n\r\n"
         )));
-        assert!(matches!(
-            output,
-            Output::NoBody {
-                keep_alive: true,
-                ..
-            }
-        ));
-        assert!(matches!(conn.state, State::RequestFinished));
+        assert!(matches!(output, Output::RequestHead { .. }));
+        assert!(matches!(conn.keep_alive, KeepAlive::KeepAlive));
+        assert!(matches!(conn.state, State::RequestHeadFinished));
     }
 
     #[test]
     fn test_close_connection() {
         let mut conn = Http11Connection::new();
 
-        let output = dbg!(conn.step(Input::Data(
+        let output = dbg!(conn.step(Input::RequestData(
             b"GET /test HTTP/1.1\r\nConnection: close\r\nHost:localhost\r\n\r\n"
         )));
-        assert!(matches!(
-            output,
-            Output::NoBody {
-                keep_alive: false,
-                ..
-            }
-        ));
-        assert!(matches!(conn.state, State::RequestFinished));
+        assert!(matches!(output, Output::RequestHead { .. }));
+        assert!(matches!(conn.keep_alive, KeepAlive::Close));
+        assert!(matches!(conn.state, State::RequestHeadFinished));
     }
 
     #[test]
@@ -464,7 +455,7 @@ mod test {
         ]
         .concat();
 
-        let output = dbg!(conn.step(Input::Data(data.as_ref())));
+        let output = dbg!(conn.step(Input::RequestData(data.as_ref())));
         assert!(matches!(output, Output::RequestErr));
         assert!(matches!(conn.state, State::Closed));
     }
