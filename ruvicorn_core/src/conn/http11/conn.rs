@@ -1,4 +1,6 @@
-use bytes::{Bytes, BytesMut};
+use std::fmt::Write;
+
+use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::types::{PyHeader, RsHeader};
 
@@ -22,6 +24,8 @@ enum State {
     RequestHeadFinished,
     // Get all requet body data. Ready to response.
     RequestBodyFinished,
+    // Response Head parse finished. Ready for send body.
+    ResponseHeadFinished,
     // Connection closed by error or finished all request/response cycle.
     Closed,
 }
@@ -49,8 +53,8 @@ enum Input<'t> {
 enum Output {
     // Request is not finished or invalid.
 
-    // Need more data to finish.
-    Partial,
+    // Need more data to finish request.
+    PartialRequest,
     // Request do not object HTTP spec.
     RequestErr,
 
@@ -64,6 +68,12 @@ enum Output {
     },
     RequestBody(Bytes, bool),
 
+    // Invalid response spec
+    ReseponseErr,
+
+    // Need more data to finish response
+    PartialResponse,
+
     ResponseStart(Bytes),
     ResponseBody(Bytes),
 }
@@ -72,7 +82,7 @@ enum Output {
 impl Output {
     fn is_request_head_finished(&self) -> bool {
         return match self {
-            Self::Partial => false,
+            Self::PartialRequest => false,
             Self::RequestErr => false,
             _ => true,
         };
@@ -104,7 +114,8 @@ impl KeepAlive {
 }
 
 struct Http11Connection {
-    buffer: BytesMut,
+    req_buffer: BytesMut,
+    res_buffer: BytesMut,
     state: State,
     offset: usize,
     keep_alive: KeepAlive,
@@ -160,7 +171,8 @@ fn cast_headers_to_rs_headers(buffer: &BytesMut, headers: &[httparse::Header]) -
 impl Http11Connection {
     fn new() -> Self {
         Self {
-            buffer: BytesMut::new(),
+            req_buffer: BytesMut::new(),
+            res_buffer: BytesMut::new(),
             state: State::Idle,
             offset: 0,
             keep_alive: KeepAlive::None,
@@ -262,7 +274,7 @@ impl Http11Connection {
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut req = httparse::Request::new(&mut headers);
 
-        match req.parse(self.buffer.as_ref()) {
+        match req.parse(self.req_buffer.as_ref()) {
             Ok(status) => match status {
                 httparse::Status::Complete(offset) => {
                     self.offset = offset;
@@ -274,14 +286,14 @@ impl Http11Connection {
                         Output::RequestHead {
                             method: req.method.unwrap().to_owned(),
                             path: req.path.unwrap().to_owned(),
-                            headers: cast_headers_to_rs_headers(&self.buffer, &headers),
+                            headers: cast_headers_to_rs_headers(&self.req_buffer, &headers),
                         }
                     } else {
                         self.state = State::Closed;
                         Output::RequestErr
                     }
                 }
-                httparse::Status::Partial => Output::Partial,
+                httparse::Status::Partial => Output::PartialRequest,
             },
             Err(e) => {
                 println!("Parsing failed with \"{}\"", e);
@@ -292,7 +304,7 @@ impl Http11Connection {
     }
 
     fn parse_body(&mut self) -> Output {
-        match self.payload.step(&mut self.buffer, self.offset) {
+        match self.payload.step(&mut self.req_buffer, self.offset) {
             PayloadStepResult::Partial(body, offset) => {
                 self.offset = offset;
                 Output::RequestBody(body, false)
@@ -307,20 +319,41 @@ impl Http11Connection {
     }
 
     fn _feed(&mut self, data: &[u8]) -> Output {
-        self.buffer.extend(data);
+        self.req_buffer.extend(data);
         match self.state {
             State::Idle => self.parse_request_head(),
             State::RequestHeadFinished => self.parse_body(),
-            State::RequestBodyFinished => todo!(),
-            State::Closed => todo!(),
+            _ => todo!()
         }
     }
+
+    fn start_response(&mut self, status: usize, headers: Vec<PyHeader>) -> Output {
+        // Write response
+        self.res_buffer.put(&b"HTTP/1.1 "[..]);
+        let status_code = status.to_string();
+        self.res_buffer.write_str(&status_code).unwrap();
+        self.res_buffer.put(&b"\r\n"[..]);
+
+        for (name, value) in headers {
+            self.res_buffer.put(name);
+            self.res_buffer.put(&b": "[..]);
+            self.res_buffer.put(value);
+            self.res_buffer.put(&b"\r\n"[..]);
+        }
+        self.res_buffer.put(&b"\r\n"[..]);
+
+        let res_bytes = self.res_buffer.clone().freeze();
+        self.state = State::ResponseHeadFinished;
+        self.res_buffer.clear();
+        return Output::ResponseStart(res_bytes);
+    }
+    
 
     fn step(&mut self, input: Input) -> Output {
         match input {
             Input::RequestData(data) => self._feed(data),
             Input::Disconnect => todo!(),
-            Input::ResponseStart { status, headers } => todo!(),
+            Input::ResponseStart { status, headers } => self.start_response(status, headers),
             Input::ResponseBody { body, more_body } => todo!(),
         }
     }
@@ -335,7 +368,7 @@ mod test {
         let mut conn = Http11Connection::new();
 
         let output = dbg!(conn.step(Input::RequestData(b"GET /")));
-        assert!(matches!(output, Output::Partial))
+        assert!(matches!(output, Output::PartialRequest))
     }
 
     #[test]
@@ -459,4 +492,21 @@ mod test {
         assert!(matches!(output, Output::RequestErr));
         assert!(matches!(conn.state, State::Closed));
     }
+
+    #[test]
+    fn test_response_head() {
+        let mut conn = Http11Connection::new();
+        conn.state = State::RequestBodyFinished;
+        
+        let output = conn.step(Input::ResponseStart { status: 200, headers: vec![(b"Name", b"Value"), (b"Name2", b"Value2")] });
+        assert!(matches!(conn.state, State::ResponseHeadFinished));
+        assert_eq!(conn.res_buffer.len(), 0);
+        match output {
+            Output::ResponseStart(data) => {
+                assert_eq!(data.clone(), Bytes::from_static(b"HTTP/1.1 200\r\nName: Value\r\nName2: Value2\r\n\r\n"));
+            },
+            _ => assert_eq!(1, 0)
+        }
+    }
+
 }
