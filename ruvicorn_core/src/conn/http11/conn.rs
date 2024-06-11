@@ -1,5 +1,3 @@
-use std::fmt::Write;
-
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::types::{PyHeader, RsHeader};
@@ -329,18 +327,18 @@ impl Http11Connection {
 
     fn start_response(&mut self, status: usize, headers: Vec<PyHeader>) -> Output {
         // Write response
-        self.res_buffer.put(&b"HTTP/1.1 "[..]);
+        self.res_buffer.put_slice(b"HTTP/1.1 ");
         let status_code = status.to_string();
-        self.res_buffer.write_str(&status_code).unwrap();
-        self.res_buffer.put(&b"\r\n"[..]);
+        self.res_buffer.put_slice(status_code.as_bytes());
+        self.res_buffer.put_slice(b"\r\n");
 
         for (name, value) in headers {
-            self.res_buffer.put(name);
-            self.res_buffer.put(&b": "[..]);
-            self.res_buffer.put(value);
-            self.res_buffer.put(&b"\r\n"[..]);
+            self.res_buffer.put_slice(name);
+            self.res_buffer.put_slice(b": ");
+            self.res_buffer.put_slice(value);
+            self.res_buffer.put_slice(b"\r\n");
         }
-        self.res_buffer.put(&b"\r\n"[..]);
+        self.res_buffer.put_slice(b"\r\n");
 
         let res_bytes = self.res_buffer.clone().freeze();
         self.state = State::ResponseHeadFinished;
