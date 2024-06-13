@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use pyo3::pyclass;
 
 use crate::types::{PyHeader, RsHeader};
 
@@ -345,14 +346,22 @@ impl Http11Connection {
         self.res_buffer.clear();
         return Output::ResponseStart(res_bytes);
     }
-    
 
+    fn send_body(&mut self, body: &[u8], more_body: bool) -> Output {
+        if !more_body {
+            self.state = State::Closed;
+        }
+        let mut bytes = BytesMut::new();
+        bytes.extend(body);
+        return Output::ResponseBody(bytes.freeze());
+    }
+    
     fn step(&mut self, input: Input) -> Output {
         match input {
             Input::RequestData(data) => self._feed(data),
             Input::Disconnect => todo!(),
             Input::ResponseStart { status, headers } => self.start_response(status, headers),
-            Input::ResponseBody { body, more_body } => todo!(),
+            Input::ResponseBody { body, more_body } => self.send_body(body, more_body),
         }
     }
 }
@@ -505,6 +514,27 @@ mod test {
             },
             _ => assert_eq!(1, 0)
         }
+    }
+
+    #[test]
+    fn test_response_body_without_extra_data() {
+        let mut conn = Http11Connection::new();
+        conn.state = State::ResponseHeadFinished;
+
+        let output = conn.step(Input::ResponseBody { body: b"data", more_body: false });
+        assert!(matches!(conn.state, State::Closed));
+        assert!(matches!(output, Output::ResponseBody(data) if (data == Bytes::from_static(b"data"))));
+
+    }
+
+    #[test]
+    fn test_response_body_with_extra_data() {
+        let mut conn = Http11Connection::new();
+        conn.state = State::ResponseHeadFinished;
+
+        let output = conn.step(Input::ResponseBody { body: b"data", more_body: true });
+        assert!(matches!(conn.state, State::ResponseHeadFinished));
+        assert!(matches!(output, Output::ResponseBody(data) if (data == Bytes::from_static(b"data"))));
     }
 
 }
