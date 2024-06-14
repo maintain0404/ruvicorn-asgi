@@ -1,9 +1,9 @@
-
 use pyo3::prelude::*;
 
 mod conn;
 mod errors;
 mod event;
+mod handle;
 mod types;
 
 /// A Python module implemented in Rust.

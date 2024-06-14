@@ -1,9 +1,11 @@
 use bytes::{BufMut, Bytes, BytesMut};
-use pyo3::pyclass;
 
 use crate::types::{PyHeader, RsHeader};
 
-use super::payload::{Payload as _, PayloadStepResult, PayloadType};
+use super::{
+    payload::{Payload as _, PayloadStepResult, PayloadType},
+    state::State,
+};
 
 const MAX_HEADERS: usize = 16;
 
@@ -14,19 +16,6 @@ macro_rules! test_trace {
             println!("{}: {}", $code, $msg);
         }
     };
-}
-
-enum State {
-    // Ready to get request.
-    Idle,
-    // Request parse finished. Ready for get body.
-    RequestHeadFinished,
-    // Get all requet body data. Ready to response.
-    RequestBodyFinished,
-    // Response Head parse finished. Ready for send body.
-    ResponseHeadFinished,
-    // Connection closed by error or finished all request/response cycle.
-    Closed,
 }
 
 #[derive(Debug)]
@@ -101,15 +90,6 @@ pub enum KeepAlive {
     KeepAlive,
     Close,
     None,
-}
-
-impl KeepAlive {
-    fn should_keep_alive(&self) -> bool {
-        match self {
-            Self::KeepAlive => true,
-            _ => false,
-        }
-    }
 }
 
 struct Http11Connection {
@@ -322,7 +302,7 @@ impl Http11Connection {
         match self.state {
             State::Idle => self.parse_request_head(),
             State::RequestHeadFinished => self.parse_body(),
-            _ => todo!()
+            _ => todo!(),
         }
     }
 
@@ -355,7 +335,7 @@ impl Http11Connection {
         bytes.extend(body);
         return Output::ResponseBody(bytes.freeze());
     }
-    
+
     fn step(&mut self, input: Input) -> Output {
         match input {
             Input::RequestData(data) => self._feed(data),
@@ -504,15 +484,21 @@ mod test {
     fn test_response_head() {
         let mut conn = Http11Connection::new();
         conn.state = State::RequestBodyFinished;
-        
-        let output = conn.step(Input::ResponseStart { status: 200, headers: vec![(b"Name", b"Value"), (b"Name2", b"Value2")] });
+
+        let output = conn.step(Input::ResponseStart {
+            status: 200,
+            headers: vec![(b"Name", b"Value"), (b"Name2", b"Value2")],
+        });
         assert!(matches!(conn.state, State::ResponseHeadFinished));
         assert_eq!(conn.res_buffer.len(), 0);
         match output {
             Output::ResponseStart(data) => {
-                assert_eq!(data.clone(), Bytes::from_static(b"HTTP/1.1 200\r\nName: Value\r\nName2: Value2\r\n\r\n"));
-            },
-            _ => assert_eq!(1, 0)
+                assert_eq!(
+                    data.clone(),
+                    Bytes::from_static(b"HTTP/1.1 200\r\nName: Value\r\nName2: Value2\r\n\r\n")
+                );
+            }
+            _ => assert_eq!(1, 0),
         }
     }
 
@@ -521,10 +507,14 @@ mod test {
         let mut conn = Http11Connection::new();
         conn.state = State::ResponseHeadFinished;
 
-        let output = conn.step(Input::ResponseBody { body: b"data", more_body: false });
+        let output = conn.step(Input::ResponseBody {
+            body: b"data",
+            more_body: false,
+        });
         assert!(matches!(conn.state, State::Closed));
-        assert!(matches!(output, Output::ResponseBody(data) if (data == Bytes::from_static(b"data"))));
-
+        assert!(
+            matches!(output, Output::ResponseBody(data) if (data == Bytes::from_static(b"data")))
+        );
     }
 
     #[test]
@@ -532,9 +522,13 @@ mod test {
         let mut conn = Http11Connection::new();
         conn.state = State::ResponseHeadFinished;
 
-        let output = conn.step(Input::ResponseBody { body: b"data", more_body: true });
+        let output = conn.step(Input::ResponseBody {
+            body: b"data",
+            more_body: true,
+        });
         assert!(matches!(conn.state, State::ResponseHeadFinished));
-        assert!(matches!(output, Output::ResponseBody(data) if (data == Bytes::from_static(b"data"))));
+        assert!(
+            matches!(output, Output::ResponseBody(data) if (data == Bytes::from_static(b"data")))
+        );
     }
-
 }
