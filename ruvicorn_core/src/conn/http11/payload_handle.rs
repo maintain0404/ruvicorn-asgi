@@ -75,6 +75,12 @@ impl Handle<RequestData, RequestBody, State, (), ()> for LengthedPayload {
     }
 }
 
+#[derive(Debug)]
+pub enum PayloadType {
+    Lenghthed(LengthedPayload),
+    Chunked
+}
+
 #[cfg(test)]
 mod test {
     use bytes::BytesMut;
