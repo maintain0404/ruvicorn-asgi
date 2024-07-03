@@ -14,7 +14,7 @@ pub trait Payload {
 pub struct EmptyPayload {}
 
 impl Payload for EmptyPayload {
-    fn step(&mut self, buffer: &mut BytesMut, offset: usize) -> PayloadStepResult {
+    fn step(&mut self, _: &mut BytesMut, offset: usize) -> PayloadStepResult {
         PayloadStepResult::Finished(Bytes::new(), offset)
     }
 }
@@ -22,12 +22,6 @@ impl Payload for EmptyPayload {
 #[derive(Debug)]
 pub struct LengthedPayload {
     pub to_consume: usize,
-}
-
-impl LengthedPayload {
-    fn new(length: usize) -> Self {
-        Self { to_consume: length }
-    }
 }
 
 impl Payload for LengthedPayload {
@@ -99,10 +93,6 @@ impl PayloadType {
 
     pub fn new_chunked() -> Self {
         Self::ChunkedPayload(ChunkedPayload {})
-    }
-
-    pub fn new_websocket_upgrade() -> Self {
-        Self::WebSocketUpgrade(WebSocketUpgrade {})
     }
 }
 

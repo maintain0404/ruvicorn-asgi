@@ -16,7 +16,7 @@ impl Handle<RequestData, RequestBody, State, (), ()> for EmptyPayload {
         buffer: &mut bytes::BytesMut,
         state: State,
         _: RequestData,
-    ) -> Result<(RequestBody, State, Option<()>), ()> {
+    ) -> Result<(RequestBody, State, ()), ((), State)> {
         buffer.clear();
         Ok((
             RequestBody {
@@ -24,14 +24,14 @@ impl Handle<RequestData, RequestBody, State, (), ()> for EmptyPayload {
                 more_body: false,
             },
             state,
-            None,
+            (),
         ))
     }
 }
 
 #[derive(Debug)]
 pub struct LengthedPayload {
-    remaining: usize,
+    pub remaining: usize,
 }
 
 impl Handle<RequestData, RequestBody, State, (), ()> for LengthedPayload {
@@ -40,7 +40,7 @@ impl Handle<RequestData, RequestBody, State, (), ()> for LengthedPayload {
         buffer: &mut bytes::BytesMut,
         state: State,
         inbound: RequestData,
-    ) -> Result<(RequestBody, State, Option<()>), ()> {
+    ) -> Result<(RequestBody, State, ()), ((), State)> {
         debug_assert!(matches!(state, State::RequestHeadFinished));
         let buf;
         buffer.extend(inbound.data);
@@ -58,10 +58,10 @@ impl Handle<RequestData, RequestBody, State, (), ()> for LengthedPayload {
                     more_body: true,
                 },
                 State::RequestHeadFinished,
-                None,
+                (),
             ))
         } else if buffer.len() > self.remaining {
-            Err(())
+            Err(((), State::Closed))
         } else {
             Ok((
                 RequestBody {
@@ -69,7 +69,7 @@ impl Handle<RequestData, RequestBody, State, (), ()> for LengthedPayload {
                     more_body: false,
                 },
                 State::RequestBodyFinished,
-                None,
+                (),
             ))
         }
     }
@@ -78,7 +78,7 @@ impl Handle<RequestData, RequestBody, State, (), ()> for LengthedPayload {
 #[derive(Debug)]
 pub enum PayloadType {
     Lenghthed(LengthedPayload),
-    Chunked
+    Chunked,
 }
 
 #[cfg(test)]
@@ -92,7 +92,7 @@ mod test {
         let mut payload = EmptyPayload {};
         let mut buffer = BytesMut::new();
 
-        let (body, next_state, next_handle) = payload
+        let (body, next_state, _) = payload
             .step(
                 &mut buffer,
                 State::RequestHeadFinished,
@@ -106,7 +106,6 @@ mod test {
         assert_eq!(body.more_body, false);
         assert!(buffer.is_empty());
         assert!(matches!(next_state, State::RequestHeadFinished));
-        assert!(matches!(next_handle, Option::None))
     }
 
     #[test]
@@ -115,7 +114,7 @@ mod test {
         let mut payload = LengthedPayload { remaining: size };
         let mut buffer = BytesMut::new();
 
-        let (body, next_state, next_handle) = payload
+        let (body, next_state, _) = payload
             .step(
                 &mut buffer,
                 State::RequestHeadFinished,
@@ -129,7 +128,6 @@ mod test {
         assert_eq!(body.more_body, false);
         assert!(buffer.is_empty());
         assert!(matches!(next_state, State::RequestBodyFinished));
-        assert!(matches!(next_handle, Option::None))
     }
 
     #[test]
@@ -138,7 +136,7 @@ mod test {
         let mut payload = LengthedPayload { remaining: size };
         let mut buffer = BytesMut::new();
 
-        let (body, next_state, next_handle) = payload
+        let (body, next_state, _) = payload
             .step(
                 &mut buffer,
                 State::RequestHeadFinished,
@@ -153,7 +151,6 @@ mod test {
         assert_eq!(payload.remaining, 4);
         assert!(buffer.is_empty());
         assert!(matches!(next_state, State::RequestHeadFinished));
-        assert!(matches!(next_handle, Option::None));
     }
 
     #[test]
