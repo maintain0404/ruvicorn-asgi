@@ -9,7 +9,7 @@ pub struct RequestData {
 
 #[derive(Debug)]
 pub struct ResponseStart {
-    pub status: usize,
+    pub status: u16,
     pub headers: Vec<Header>,
 }
 
